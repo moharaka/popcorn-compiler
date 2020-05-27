@@ -72,9 +72,8 @@ class Symbol:
 			", objARM=" + self.getObjectFile(Arch.ARM) +
 			", objPOWER=" + self.getObjectFile(Arch.POWER))
 
-
 	def getObjectFile(self, arch):
-		return self._objectFiles[arch]
+                return self._objectFiles[arch]
 
 	def setObjectFile(self, obj, arch):
 		if not symbolObjectFileSanityCheck(obj):

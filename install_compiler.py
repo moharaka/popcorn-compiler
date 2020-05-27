@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import urllib
+import re
 
 #================================================
 # GLOBALS
@@ -29,13 +30,10 @@ llvm_targets = {
     'x86_64' : 'X86'
 }
 
-# LLVM 3.7.1 SVN URL
-llvm_url = 'http://llvm.org/svn/llvm-project/llvm/tags/RELEASE_371/final'
-llvm_revision = '320332'
-# Clang SVN URL
-clang_url = 'http://llvm.org/svn/llvm-project/cfe/tags/RELEASE_371/final'
-# Binutils 2.27 URL
-binutils_url = 'http://ftp.gnu.org/gnu/binutils/binutils-2.27.tar.bz2'
+# LLVM 9.0.1 URL
+llvm_url = 'https://github.com/llvm/llvm-project.git'
+# Binutils 2.32 URL
+binutils_url = 'http://ftp.gnu.org/gnu/binutils/binutils-2.32.tar.bz2'
 
 #================================================
 # ARGUMENT PARSING
@@ -177,12 +175,15 @@ def postprocess_args(args):
         args.binutils_install = True
         args.musl_install = True
         args.libelf_install = True
-        args.libopenpop_install = True
+        args.libopenpop_install = False
         args.stacktransform_install = True
         args.migration_install = True
         args.stackdepth_install = True
         args.tools_install = True
         args.utils_install = True
+
+    # Add install_path to the PATH environment variable
+    os.environ["PATH"] = args.install_path + "/bin:" + os.environ["PATH"]
 
 def warn_stupid(args):
     if len(args.install_targets) < 2:
@@ -219,7 +220,14 @@ def check_for_prerequisites(args):
     for prereq in gcc_prerequisites:
         out = _check_for_prerequisite(prereq)
         if out:
-            major, minor, micro = [int(v) for v in out.split()[3].split('.')]
+            # GCC version string format:
+            # $CC (name of compiler) x.y.z.
+            #
+            # split() won't work on Ubuntu compilers because of the central
+            # (Ubuntu <version>) gets concatenated into separate strings.
+            gcc_version = re.findall("\) (\d+\.\d+\.\d+)", out)
+
+            major, minor, micro = [int(v) for v in gcc_version[0].split('.')]
             version = major * 10 + minor
             if not (version >= 48):
                 print('{} 4.8 or higher required to continue'.format(prereq))
@@ -261,50 +269,42 @@ def install_clang_llvm(base_path, install_path, num_threads, llvm_targets):
     clang_download_path = os.path.join(llvm_download_path, 'tools', 'clang')
 
     patch_base = os.path.join(base_path, 'patches', 'llvm')
-    llvm_patch_path = os.path.join(patch_base, 'llvm-3.7.1.patch')
-    clang_patch_path = os.path.join(patch_base, 'clang-3.7.1.patch')
+    llvm_patch_path = os.path.join(patch_base, 'llvm-9.patch')
 
     cmake_flags = ['-DCMAKE_INSTALL_PREFIX={}'.format(install_path),
                    '-DLLVM_TARGETS_TO_BUILD={}'.format(llvm_targets),
                    '-DCMAKE_BUILD_TYPE=Debug',
                    '-DLLVM_ENABLE_RTTI=ON',
-                   '-DBUILD_SHARED_LIBS=ON']
+                   '-DBUILD_SHARED_LIBS=ON',
+                   '-DLLVM_EXTERNAL_PROJECTS="clang;"',
+                   '-DLLVM_EXTERNAL_CLANG_SOURCE_DIR={}'
+                   .format(llvm_download_path + "/clang")]
 
     #=====================================================
     # DOWNLOAD LLVM
     #=====================================================
     print('Downloading LLVM source...')
-    args = ['svn', 'co', llvm_url, llvm_download_path, '-r', llvm_revision]
-    run_cmd('download LLVM source', args)
 
-    #=====================================================
-    # DOWNLOAD CLANG
-    #=====================================================
-    print('Downloading Clang source...')
-    args = ['svn', 'co', clang_url, clang_download_path, '-r', llvm_revision]
-    run_cmd('download Clang source', args)
+    run_cmd('clearing toolchain', ['rm', '-rf', install_path])
+    run_cmd('create install_path', ['mkdir', '-p', install_path + '/src'])
+
+    args = ['git', 'clone', "--depth", "1", "-b", "release/9.x", llvm_url,
+            llvm_download_path]
+    run_cmd('download LLVM source', args)
 
     #=====================================================
     # PATCH LLVM
     #=====================================================
     with open(llvm_patch_path, 'r') as patch_file:
         print('Patching LLVM...')
-        args = ['patch', '-p0', '-d', llvm_download_path]
+        args = ['patch', '-p1', '-d', llvm_download_path]
         run_cmd('patch LLVM', args, patch_file)
-
-    #=====================================================
-    # PATCH CLANG
-    #=====================================================
-    with open(clang_patch_path, 'r') as patch_file:
-        print("Patching clang...")
-        args = ['patch', '-p0', '-d', clang_download_path]
-        run_cmd('patch Clang', args, patch_file)
 
     #=====================================================
     # BUILD AND INSTALL LLVM
     #=====================================================
     cur_dir = os.getcwd()
-    os.chdir(llvm_download_path)
+    os.chdir(llvm_download_path + '/llvm')
     os.mkdir('build')
     os.chdir('build')
 
@@ -314,6 +314,8 @@ def install_clang_llvm(base_path, install_path, num_threads, llvm_targets):
 
 
     print('Running Make...')
+    args = ['make', '-j', str(num_threads), 'install-llvm-headers']
+    run_cmd('run Make headers', args)
     args = ['make', '-j', str(num_threads)]
     run_cmd('run Make', args)
     args += ['install']
@@ -321,16 +323,16 @@ def install_clang_llvm(base_path, install_path, num_threads, llvm_targets):
 
     os.chdir(cur_dir)
 
-def install_binutils(base_path, install_path, num_threads):
+def install_binutils(base_path, install_path, num_threads, target):
 
-    binutils_install_path = os.path.join(install_path, 'src', 'binutils-2.27')
+    binutils_install_path = os.path.join(install_path, 'src', 'binutils-2.32')
 
     patch_path = os.path.join(base_path, 'patches', 'binutils-gold',
-                              'binutils-2.27-gold.patch')
+                              'binutils-2.32.patch')
 
     configure_flags = ['--prefix={}'.format(install_path),
                        '--enable-gold',
-                       '--disable-ld',
+                       '--enable-ld',
                        '--disable-libquadmath',
                        '--disable-libquadmath-support',
                        '--disable-libstdcxx']
@@ -340,8 +342,8 @@ def install_binutils(base_path, install_path, num_threads):
     #=====================================================
     print('Downloading binutils source...')
     try:
-        urllib.urlretrieve(binutils_url, 'binutils-2.27.tar.bz2')
-        with tarfile.open('binutils-2.27.tar.bz2', 'r:bz2') as f:
+        urllib.urlretrieve(binutils_url, 'binutils-2.32.tar.bz2')
+        with tarfile.open('binutils-2.32.tar.bz2', 'r:bz2') as f:
             f.extractall(path=os.path.join(install_path, 'src'))
     except Exception as e:
         print('Could not download/extract binutils source ({})!'.format(e))
@@ -352,19 +354,23 @@ def install_binutils(base_path, install_path, num_threads):
     #=====================================================
     print("Patching binutils...")
     with open(patch_path, 'r') as patch_file:
-        args = ['patch', '-p0', '-d', binutils_install_path]
+        args = ['patch', '-p1', '-d', binutils_install_path]
         run_cmd('patch binutils', args, patch_file)
 
     #=====================================================
     # BUILD AND INSTALL BINUTILS
     #=====================================================
     cur_dir = os.getcwd()
+
     os.chdir(binutils_install_path)
-    os.mkdir('build')
-    os.chdir('build')
+    shutil.rmtree(binutils_install_path
+                  + "/build.{}".format(target), ignore_errors=True)
+    os.mkdir('build.{}'.format(target))
+    os.chdir('build.{}'.format(target))
 
     print("Configuring binutils...")
-    args = ['../configure'] + configure_flags
+    args = ['../configure'] + configure_flags \
+        + ["--target={}-popcorn-linux-gnu".format(target)];
     run_cmd('configure binutils', args)
 
     print('Making binutils...')
@@ -629,7 +635,9 @@ def main(args):
                            args.llvm_targets)
 
     if args.binutils_install:
-        install_binutils(args.base_path, args.install_path, args.threads)
+        for target in args.install_targets:
+            install_binutils(args.base_path, args.install_path, args.threads,
+                             target)
 
     for target in args.install_targets:
         if args.musl_install:

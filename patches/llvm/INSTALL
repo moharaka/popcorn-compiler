@@ -2,18 +2,14 @@
 Installing clang/LLVM
 ---------------------
 
-1. Download LLVM and clang 3.7.1:
+1. Download LLVM and clang 9.0:
 
-  $ svn co http://llvm.org/svn/llvm-project/llvm/tags/RELEASE_371/final /usr/local/popcorn/src/llvm
-  $ svn co http://llvm.org/svn/llvm-project/cfe/tags/RELEASE_371/final /usr/local/popcorn/src/llvm/tools/clang
+  $ git clone --depth 1 -b release/9.x https://github.com/llvm/llvm-project.git \
+	/usr/local/popcorn/src/llvm
 
 2. Patch LLVM:
 
-  $ patch -p0 -d /usr/local/popcorn/src/llvm < llvm-3.7.1.patch
-
-3. Patch clang:
-
-  $ patch -p0 -d /usr/local/popcorn/src/llvm/tools/clang < clang-3.7.1.patch
+  $ patch -p0 -d /usr/local/popcorn/src/llvm < llvm-9.patch
 
 4. Build & install LLVM (see [1] for more details)
 

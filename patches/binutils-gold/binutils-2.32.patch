@@ -1,7 +1,109 @@
-diff -Naur -x build ./gold/mapfile.cc ../binutils-2.27/gold/mapfile.cc
---- ./gold/mapfile.cc	2016-08-03 03:36:53.000000000 -0400
-+++ ../binutils-2.27/gold/mapfile.cc	2018-06-29 15:17:46.470918293 -0400
-@@ -264,9 +264,10 @@
+diff --git a/bfd/elf64-x86-64.c b/bfd/elf64-x86-64.c
+index c7d8bca710..e8c7b4283d 100644
+--- a/bfd/elf64-x86-64.c
++++ b/bfd/elf64-x86-64.c
+@@ -2340,6 +2340,32 @@ error_return:
+   return FALSE;
+ }
+ 
++static popcorn_vma_offset (struct bfd_link_info *info)
++{
++  /* Popcorn: TLS starts at the end of the thread descriptor.  musl-libc's
++     pthread descriptor is 288 bytes.  */
++  const int bits = 64;
++  const int tcb_size = bits / 8 * 2; // Match aarch64
++  const int musl_pthread_size = 288;
++
++  /* Popcorn: create a uniform TLS layout which places TLS *above* the
++     thread pointer (rather than below like normal x86-64).  */
++
++  bfd_vma tls_align;
++  /* If tls_sec is NULL, we should have signalled an error already.  */
++  if (elf_hash_table (info)->tls_sec == NULL)
++    tls_align = 0;
++  else
++    tls_align = 1 << elf_hash_table (info)->tls_sec->alignment_power;
++
++  bfd_vma aligned_tcb_size = 0;
++
++  if (tls_align != 0)
++    aligned_tcb_size = (tcb_size + tls_align - 1) &~ (tls_align - 1);
++
++  return aligned_tcb_size + tcb_size + musl_pthread_size;
++}
++
+ /* Return the relocation value for @tpoff relocation
+    if STT_TLS virtual address is ADDRESS.  */
+ 
+@@ -2356,7 +2382,8 @@ elf_x86_64_tpoff (struct bfd_link_info *info, bfd_vma address)
+ 
+   /* Consider special static TLS alignment requirements.  */
+   static_tls_size = BFD_ALIGN (htab->tls_size, bed->static_tls_alignment);
+-  return address - static_tls_size - htab->tls_sec->vma;
++  return address - static_tls_size - htab->tls_sec->vma
++    + popcorn_vma_offset(info);
+ }
+ 
+ /* Relocate an x86_64 ELF section.  */
+@@ -3511,7 +3538,8 @@ direct:
+ 				     + htab->sgotplt_jump_table_size);
+ 		  sreloc = htab->elf.srelplt;
+ 		  if (indx == 0)
+-		    outrel.r_addend = relocation - _bfd_x86_elf_dtpoff_base (info);
++		    outrel.r_addend = relocation - _bfd_x86_elf_dtpoff_base (info)
++		      + popcorn_vma_offset(info);
+ 		  else
+ 		    outrel.r_addend = 0;
+ 		  elf_append_rela (output_bfd, sreloc, &outrel);
+@@ -3533,7 +3561,8 @@ direct:
+ 	      outrel.r_addend = 0;
+ 	      if ((dr_type == R_X86_64_TPOFF64
+ 		   || dr_type == R_X86_64_TLSDESC) && indx == 0)
+-		outrel.r_addend = relocation - _bfd_x86_elf_dtpoff_base (info);
++		outrel.r_addend = relocation - _bfd_x86_elf_dtpoff_base (info)
++		  + popcorn_vma_offset(info);
+ 	      outrel.r_info = htab->r_info (indx, dr_type);
+ 
+ 	      elf_append_rela (output_bfd, sreloc, &outrel);
+@@ -3544,7 +3573,8 @@ direct:
+ 		    {
+ 		      BFD_ASSERT (! unresolved_reloc);
+ 		      bfd_put_64 (output_bfd,
+-				  relocation - _bfd_x86_elf_dtpoff_base (info),
++				  relocation - _bfd_x86_elf_dtpoff_base (info)
++				  + popcorn_vma_offset(info),
+ 				  htab->elf.sgot->contents + off + GOT_ENTRY_SIZE);
+ 		    }
+ 		  else
+@@ -3799,7 +3829,8 @@ direct:
+ 	case R_X86_64_DTPOFF32:
+ 	  if (!bfd_link_executable (info)
+ 	      || (input_section->flags & SEC_CODE) == 0)
+-	    relocation -= _bfd_x86_elf_dtpoff_base (info);
++	    relocation -= _bfd_x86_elf_dtpoff_base (info)
++	      - popcorn_vma_offset(info);
+ 	  else
+ 	    relocation = elf_x86_64_tpoff (info, relocation);
+ 	  break;
+@@ -3810,9 +3841,11 @@ direct:
+ 	  relocation = elf_x86_64_tpoff (info, relocation);
+ 	  break;
+ 
+-	case R_X86_64_DTPOFF64:
++	case
++	  R_X86_64_DTPOFF64:
+ 	  BFD_ASSERT ((input_section->flags & SEC_CODE) == 0);
+-	  relocation -= _bfd_x86_elf_dtpoff_base (info);
++	  relocation -= _bfd_x86_elf_dtpoff_base (info)
++	    - popcorn_vma_offset(info);
+ 	  break;
+ 
+ 	default:
+diff --git a/gold/mapfile.cc b/gold/mapfile.cc
+index 907df97d04..e7d9306420 100644
+--- a/gold/mapfile.cc
++++ b/gold/mapfile.cc
+@@ -264,9 +264,10 @@ Mapfile::print_input_section(Relobj* relobj, unsigned int shndx)
    snprintf(sizebuf, sizeof sizebuf, "0x%llx",
  	   static_cast<unsigned long long>(size));
  
@@ -13,10 +115,11 @@ diff -Naur -x build ./gold/mapfile.cc ../binutils-2.27/gold/mapfile.cc
  	  relobj->name().c_str());
  
    if (os != NULL)
-diff -Naur -x build ./gold/x86_64.cc ../binutils-2.27/gold/x86_64.cc
---- ./gold/x86_64.cc	2016-08-03 03:36:53.000000000 -0400
-+++ ../binutils-2.27/gold/x86_64.cc	2018-07-02 14:40:35.309227064 -0400
-@@ -441,6 +441,14 @@
+diff --git a/gold/x86_64.cc b/gold/x86_64.cc
+index c06a282247..c5bf4ed5a7 100644
+--- a/gold/x86_64.cc
++++ b/gold/x86_64.cc
+@@ -695,6 +695,14 @@ template<int size>
  class Target_x86_64 : public Sized_target<size, false>
  {
   public:
@@ -31,7 +134,7 @@ diff -Naur -x build ./gold/x86_64.cc ../binutils-2.27/gold/x86_64.cc
    // In the x86_64 ABI (p 68), it says "The AMD64 ABI architectures
    // uses only Elf64_Rela relocation entries with explicit addends."
    typedef Output_data_reloc<elfcpp::SHT_RELA, true, size, false> Reloc_section;
-@@ -4066,7 +4074,14 @@
+@@ -5232,7 +5240,14 @@ Target_x86_64<size>::Relocate::relocate_tls(
  			  || issue_undefined_symbol_error(gsym));
  	      return;
  	    }
@@ -47,7 +150,7 @@ diff -Naur -x build ./gold/x86_64.cc ../binutils-2.27/gold/x86_64.cc
  	}
        Relocate_functions<size, false>::rela32(view, value, addend);
        break;
-@@ -4081,7 +4096,14 @@
+@@ -5247,7 +5262,14 @@ Target_x86_64<size>::Relocate::relocate_tls(
  			  || issue_undefined_symbol_error(gsym));
  	      return;
  	    }
@@ -63,7 +166,7 @@ diff -Naur -x build ./gold/x86_64.cc ../binutils-2.27/gold/x86_64.cc
  	}
        Relocate_functions<size, false>::rela64(view, value, addend);
        break;
-@@ -4147,7 +4169,11 @@
+@@ -5313,7 +5335,11 @@ Target_x86_64<size>::Relocate::relocate_tls(
  		      || issue_undefined_symbol_error(gsym));
  	  return;
  	}
@@ -76,7 +179,7 @@ diff -Naur -x build ./gold/x86_64.cc ../binutils-2.27/gold/x86_64.cc
        Relocate_functions<size, false>::rela32(view, value, addend);
        break;
      }
-@@ -4271,7 +4297,16 @@
+@@ -5437,7 +5463,16 @@ Target_x86_64<size>::Relocate::tls_gd_to_le(
  	     15);
      }
  
@@ -94,7 +197,7 @@ diff -Naur -x build ./gold/x86_64.cc ../binutils-2.27/gold/x86_64.cc
    Relocate_functions<size, false>::rela32(view + 8, value, 0);
  
    // The next reloc should be a PLT32 reloc against __tls_get_addr.
-@@ -4342,7 +4377,16 @@
+@@ -5508,7 +5543,16 @@ Target_x86_64<size>::Relocate::tls_desc_gd_to_le(
  		     view[-3] == 0x48 && view[-2] == 0x8d && view[-1] == 0x05);
        view[-2] = 0xc7;
        view[-1] = 0xc0;
@@ -112,7 +215,7 @@ diff -Naur -x build ./gold/x86_64.cc ../binutils-2.27/gold/x86_64.cc
        Relocate_functions<size, false>::rela32(view, value, 0);
      }
    else
-@@ -4477,7 +4521,18 @@
+@@ -5643,7 +5687,18 @@ Target_x86_64<size>::Relocate::tls_ie_to_le(
      }
  
    if (tls_segment != NULL)
@@ -132,3 +235,24 @@ diff -Naur -x build ./gold/x86_64.cc ../binutils-2.27/gold/x86_64.cc
    Relocate_functions<size, false>::rela32(view, value, 0);
  }
  
+diff --git a/ld/ldlang.c b/ld/ldlang.c
+index 33f6bda292..b5fe9c1f70 100644
+--- a/ld/ldlang.c
++++ b/ld/ldlang.c
+@@ -4401,6 +4401,7 @@ print_input_section (asection *i, bfd_boolean is_discarded)
+   bfd_size_type size = i->size;
+   int len;
+   bfd_vma addr;
++  unsigned int sec_align = 1 << i->alignment_power;
+ 
+   init_opb ();
+ 
+@@ -4429,7 +4430,7 @@ print_input_section (asection *i, bfd_boolean is_discarded)
+ 	size = 0;
+     }
+ 
+-  minfo ("0x%V %W %pB\n", addr, size, i->owner);
++  minfo ("0x%V %W 0x%v %pB\n", addr, size, sec_align, i->owner);
+ 
+   if (size != i->rawsize && i->rawsize != 0)
+     {
